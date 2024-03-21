@@ -3,15 +3,22 @@ Cpp version of Asynchronous Flow Kit (https://github.com/pewsou/asyncflow-objc)
 
 Currently available facilities:
 
-*Threadpool*: can create and run in parallel indefinite number of isolated sessions. Each session stores set of functions.
+*Threadpool*: 
+
+can create and run in parallel indefinite number of isolated sessions. Each session stores set of functions.
+
 Session types available:
+
     Composition - parallel execution pattern mimicking Single Instruction Multiple Data approach.
     There is stored array of functions, F0...Fn .
     Each supplied data item Dk is processed in next manner: Fn(...F2(F1(F0(Dk)))).
 
-*Queues*: simple FIFO-style queues that provide size boundaries, upper and lower. Additionaly queues may perform blocking calls, i.e. wait for first insert in queue or wait for first extraction from the queue.
+*Queues*: 
+
+    simple FIFO-style queues that provide size boundaries, upper and lower. Additionaly queues may perform blocking calls, i.e. wait for first insert in queue or wait for first extraction from the queue.
 
 *Batching queues*:
+    
     FIFO-style queues that may aggregate inserted data in batches.
 
 
@@ -99,7 +106,9 @@ x=abq->pull(opsucc);
 There are no more batches in the queue!
 
 ## Upcoming:
+
 Filtering queue: FIFO-style queue, that allows to silently discard items by different criteria.
+
 Mailbox - embedded facility for asynchronous message exchange.
 
 [![Twitter URL](https://img.shields.io/twitter/url/https/twitter.com/bvprojs.svg?style=social&label=Follow%20%40bvprojs)](https://twitter.com/bvprojs)
