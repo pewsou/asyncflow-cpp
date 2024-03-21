@@ -13,8 +13,8 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//  Created by Boris Vigman on 15/02/2019.
-//  Copyright © 2019-2023 Boris Vigman. All rights reserved.
+//  Created by Boris Vigman.
+//  Copyright © 2019-2024 Boris Vigman. All rights reserved.
 //
 
 #include "CPPAFKBase.hpp"
@@ -58,14 +58,13 @@ void CPPAFKBase::registerCtrlBlock(CPPAFKControlBlock* cblk){
     if(cblk){
         DASFKLog_2("INFO: Registering session ",cblk->sessionId);
         lkNonLocal. lock();
-        ctrlblocks[cblk->getCurrentSessionId()]=cblk;// setObject:cblk forKey:];
+        itsCtrlBlocks[cblk->getSessionId()]=cblk;
         lkNonLocal.unlock();
     }
 }
 CPPAFKControlBlock* CPPAFKBase::newCtrlBlock(){
     DASFKLog("Adding session");
-    AsyncFlowKit::CPPAFKControlBlock* b=new CPPAFKControlBlock(itsNumId,CPPAFKUtilities::createRandomNum(),CPPAFKUtilities::createRandomNum());
-    // [[ASFKControlBlock alloc]initWithParent:self.itsName sessionId:createNumId() andSubId:nil];
+    CPPAFKControlBlock* b=new CPPAFKControlBlock(itsNumId,CPPAFKUtilities::createRandomNum(),CPPAFKUtilities::createRandomNum());
      registerCtrlBlock(b);
     
     return b;
@@ -73,7 +72,6 @@ CPPAFKControlBlock* CPPAFKBase::newCtrlBlock(){
 CPPAFKControlBlock* CPPAFKBase::newCtrlBlock(CPPAFKNumId sessionId,CPPAFKNumId subId){
     COMASFKLog("Adding sub-session");
     CPPAFKControlBlock* b=new CPPAFKControlBlock(itsNumId,sessionId,subId);;
-    //[[ASFKControlBlock alloc]initWithParent:self.itsName sessionId:sessionId andSubId:subId];
     registerCtrlBlock(b);
     
     return b;
@@ -82,20 +80,31 @@ void CPPAFKBase::forgetAllCtrlBlocks(){
     DASFKLog(" Unregistering all control blocks");
     lkNonLocal.lock();
     std::map<CPPAFKNumId, CPPAFKControlBlock*, cmpNumericalId64>::iterator iter;
-    for (iter=ctrlblocks.begin(); iter!=ctrlblocks.end(); ++iter) {
+    for (iter=itsCtrlBlocks.begin(); iter!=itsCtrlBlocks.end(); ++iter) {
         delete iter->second;
     }
-    ctrlblocks.clear();
+    itsCtrlBlocks.clear();
     lkNonLocal.unlock();
+}
+void CPPAFKBase::forgetCtrlBlock(CPPAFKControlBlock* cb){
+    if(cb != std::nullptr_t())
+    {
+        lkNonLocal.lock();
+        delete cb;
+        lkNonLocal.unlock();
+    }
+    else{
+            WASFKLog(" Failed to forget control block because it was not found");
+        }
 }
 void CPPAFKBase::forgetCtrlBlock(CPPAFKNumId sessionId){
     DASFKLog_2(" Forgetting session ",sessionId);
     lkNonLocal.lock();
     std::map<CPPAFKNumId,CPPAFKControlBlock*,cmpNumericalId64>::iterator iter;
-    iter=ctrlblocks.find(sessionId);
-    if(iter != ctrlblocks.end()){
+    iter=itsCtrlBlocks.find(sessionId);
+    if(iter != itsCtrlBlocks.end()){
         CPPAFKControlBlock* cb=iter->second;
-        ctrlblocks.erase(iter);
+        itsCtrlBlocks.erase(iter);
         delete cb;
         lkNonLocal.unlock();
     }
@@ -103,32 +112,19 @@ void CPPAFKBase::forgetCtrlBlock(CPPAFKNumId sessionId){
         lkNonLocal.unlock();
         WASFKLog(" Failed to forget control block because it was not found");
     }
-    
 }
 CPPAFKControlBlock* CPPAFKBase::getControlBlockWithId(CPPAFKNumId blkId){
-    //if(blkId){
     lkNonLocal.lock();
     std::map<CPPAFKNumId,CPPAFKControlBlock*,cmpNumericalId64>::iterator iter;
-    iter=ctrlblocks.find(blkId);
-    if(iter != ctrlblocks.end()){
+    iter=itsCtrlBlocks.find(blkId);
+    if(iter != itsCtrlBlocks.end()){
         CPPAFKControlBlock* r=iter->second;
         lkNonLocal.unlock();
         return r;
     }
-    //}
+
     return std::nullptr_t();;
 }
 
-void CPPAFKBase::setProgressRoutine(CPPAFKProgressRoutine_t prog){
-//    if(prog!=nil){
-//        progressProc=prog;
-//    }
-}
-    
-CPPAFKPar::CPPAFKPar(){
-    globalTPool=CPPAFKThreadpool::getInstance();
-}
-CPPAFKPar::~CPPAFKPar(){
-    itsCtrlBlocks.clear();
-}
+
 }

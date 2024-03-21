@@ -13,7 +13,7 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//  Copyright © 2019-2023 Boris Vigman. All rights reserved.
+//  Copyright © 2019-2024 Boris Vigman. All rights reserved.
 //
 //
 
@@ -62,6 +62,7 @@ int pthread_setaffinity_np(pthread_t thread, size_t cpu_size,
 
 namespace AsyncFlowKit{
 void CPPAFKThreadpoolState::reassignProcs(CPPAFKThreadpoolConfig& tpc, CPPAFKQSize_t reqThreads){
+
     long proc=0;
     tpcfg.requiredThreadsCount=reqThreads;
     tpc.actualThreadsCount=numCPUs;
@@ -106,7 +107,7 @@ void CPPAFKThreadpoolState::reassignProcs(CPPAFKThreadpoolConfig& tpc, CPPAFKQSi
     }
 }
 void CPPAFKThreadpoolState::cloneSessionsMap2Vector(){
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
     onlineSessions.clear();
     for (iter=allSessions.begin(); iter != allSessions.end(); ++iter) {
         if(iter->second->isPaused() == false){
@@ -114,14 +115,90 @@ void CPPAFKThreadpoolState::cloneSessionsMap2Vector(){
         }
     }
 }
-CPPAFKPriv_EndingTerm & CPPAFKPriv_EndingTerm::getInstance (){
-    static CPPAFKPriv_EndingTerm et;
-    return et;
-}
 
-void tworker( std::uint32_t selector,  CPPAFKThreadpoolState* state);
+void tworker( CPPAFKThreadpoolSize_t selector,  CPPAFKThreadpoolState* state);
 
-
+    void CPPAFKGarbageCollector::dispose(){
+        for(CPPAFKQSize_t t=0;t<CPPAFK_DATA_RELEASING_BATCH_SIZE;++t)
+        {
+            bool success=false;
+            CPPAFKBasicDataObjectWrap* ow=userDataCollection.pull(success);
+            if(success)
+            {
+                delete ow;
+            }
+            else{
+                break;
+            }
+        }
+        for(CPPAFKQSize_t t=0;t<CPPAFK_DATA_RELEASING_BATCH_SIZE;++t)
+        {
+            bool success=false;
+            CPPAFKPriv_WrapBQ<CPPAFKBasicDataObjectWrap*>* wc=wrapperCollection.pull(success);
+            if(success)
+            {
+                delete wc;
+            }
+            else{
+                break;
+            }
+        }
+        for(CPPAFKQSize_t t=0;t<CPPAFK_DATA_RELEASING_BATCH_SIZE;++t)
+        {
+            bool success=false;
+            CPPAFKThreadpoolSession* ts=killedSessions.pull(success);
+            if(success)
+            {
+                if (ts->isCancelled() ) {
+                    delete ts;
+                }
+            }
+            else{
+                break;
+            }
+        }
+    }
+    void CPPAFKGarbageCollector::disposeAll(){
+        for(CPPAFKQSize_t t=0;;++t)
+        {
+            bool success=false;
+            CPPAFKBasicDataObjectWrap* ow=userDataCollection.pull(success);
+            if(success)
+            {
+                delete ow;
+            }
+            else{
+                break;
+            }
+        }
+        for(CPPAFKQSize_t t=0;;++t)
+        {
+            bool success=false;
+            CPPAFKPriv_WrapBQ<CPPAFKBasicDataObjectWrap*>* wc=wrapperCollection.pull(success);
+            if(success)
+            {
+                delete wc;
+            }
+            else{
+                break;
+            }
+        }
+        for(CPPAFKQSize_t t=0;;++t)
+        {
+            bool success=false;
+            CPPAFKThreadpoolSession* ts=killedSessions.pull(success);
+            if(success)
+            {
+                if (ts->isCancelled() ) {
+                    delete ts;
+                }
+                
+            }
+            else{
+                break;
+            }
+        }
+    }
 CPPAFKThreadpool* CPPAFKThreadpool::getInstance()
 {
     static CPPAFKThreadpool s;
@@ -130,23 +207,194 @@ CPPAFKThreadpool* CPPAFKThreadpool::getInstance()
 
 CPPAFKThreadpool::CPPAFKThreadpool()
 {
+    countPaused=0;
     createThreads(CPPAFK_NUM_OF_HW_THREADS);
 }
 CPPAFKThreadpool::~CPPAFKThreadpool()
 {
-    
+    //std::uint32_t tc=threads.size();
+    for (; threads.size()>0;) {
+        threads[threads.size()-1].join();
+        threads.pop_back();
+    }
+    countPaused=0;
 }
-void CPPAFKThreadpool::_reassignProcs(CPPAFKThreadpoolConfig& tpc){
-    
+
+void CPPAFKThreadpool::shutdown(){
+    CPPAFKThreadpool::getInstance()->_shutdown();
 }
-void CPPAFKThreadpool::createThreads(std::uint32_t numProcs)
+bool CPPAFKThreadpool::cancelAllSessions(){
+    return CPPAFKThreadpool::getInstance()->_cancelAll();
+}
+bool CPPAFKThreadpool::pauseAllSessions(){
+    return CPPAFKThreadpool::getInstance()->_pauseAll();
+};
+bool CPPAFKThreadpool::resumeAllSessions(){
+    return CPPAFKThreadpool::getInstance()->_resumeAll();
+};
+void CPPAFKThreadpool::flushAllSessions(){
+    CPPAFKThreadpool::getInstance()->_flushAll();
+}
+
+bool CPPAFKThreadpool::setProgressRoutineInSession(CPPAFKNumId sessionId, CPPAFKProgressRoutine_t rprogress){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
+    
+    if(iter != itsState.allSessions.end()){
+        result = iter->second->setProgressRoutine(rprogress);
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    
+    return result;
+}
+bool CPPAFKThreadpool::setRoutinesInSession(CPPAFKNumId sessionId, std::vector<CPPAFKExecUnitWrap>& routines){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
+    
+    if(iter != itsState.allSessions.end()){
+        result = iter->second->setRoutines(routines);
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    
+    return result;
+}
+bool CPPAFKThreadpool::setCancellationRoutineInSession(CPPAFKNumId sessionId, CPPAFKCancellationRoutine_t rcanc){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
+    
+    if(iter != itsState.allSessions.end()){
+        result = iter->second->setCancellationHandler(rcanc);
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    
+    return result;
+}
+bool CPPAFKThreadpool::setExecSummaryRoutineInSession(CPPAFKNumId sessionId, CPPAFKExecutableRoutineSummary_t rsum){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
+    
+    if(iter != itsState.allSessions.end()){
+        result = iter->second->setSummary(rsum);
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    
+    return result;
+}
+bool CPPAFKThreadpool::setExpirationRoutine(CPPAFKNumId sessionId, CPPAFKExpirationRoutine_t rexp){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
+    
+    if(iter != itsState.allSessions.end()){
+        result = iter->second->setExpirationSummary(rexp);
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    
+    return result;
+}
+    CPPAFKNumId CPPAFKThreadpool::createComposingSession(CPPAFKSessionConfigParams* separams){
+        CPPAFKNumId numid;
+        if(separams == std::nullptr_t()){
+            return numid;
+        }
+        //decode params
+        eCPPAFKBlockingCallMode blkMode=separams->blockCallMode;
+        bool dataMode=true;
+#ifdef CPPAFK_USE_STR_OBJ_NAME
+        std::string name=separams->sessionName;
+#endif
+        //create session
+        CPPAFKComposingSession* se=new CPPAFKComposingSession(blkMode, dataMode, separams->autodelete, itsState.gc
+#ifdef CPPAFK_USE_STR_OBJ_NAME
+                                                              , name
+#endif
+                                                              );
+        
+        se->setSummary(separams->summaryRoutine);
+        se->setProgressRoutine(separams->progressRoutine);
+        se->setRoutines(separams->routines);
+        se->setCancellationHandler(separams->cancellationRoutine);
+        se->setInternalCancellationHandler([&](CPPAFKNumId numId){
+
+        });
+        se->setExpirationSummary(separams->expSummary);
+        se->setExpirationCondition(separams->expCondition);
+        //prepareSession;
+        bool res=addSession(se, se->getControlBlock()->getSessionId());
+        if(!res){
+            delete se;
+            DASFKLog("Could not create session");
+            return numid;
+        }
+
+        numid=se->getControlBlock()->getSessionId();
+        return numid;
+    }
+    bool CPPAFKThreadpool::castObjectForSession(CPPAFKNumId sessionId, CPPAFKBasicDataObjectWrap* obj,
+                                              CPPAFKExecutionParams* params){
+        if( sessionId.num64 == 0){
+            return false;
+        }
+        return postData(obj, sessionId, false);
+    }
+    bool CPPAFKThreadpool::callObjectForSession(CPPAFKNumId sessionId, CPPAFKBasicDataObjectWrap* obj,CPPAFKExecutionParams* params){
+        WASFKLog(CPPAFK_STR_UNAVAIL_VER_OP);
+        
+        return false;
+    }
+    
+    bool CPPAFKThreadpool::castVectorForSession(CPPAFKNumId sessionId, std::vector<CPPAFKBasicDataObjectWrap*>& objs,CPPAFKExecutionParams* params){
+        if( objs.size() == 0 || sessionId.num64 == 0){
+            return false;
+        }
+        return postDataAsVector(objs, sessionId, false);
+    }
+    bool CPPAFKThreadpool::callVectorForSession(CPPAFKNumId sessionId, std::vector<CPPAFKBasicDataObjectWrap*>& objs,CPPAFKExecutionParams* params){
+        WASFKLog(CPPAFK_STR_UNAVAIL_VER_OP);
+        return false;
+    }
+    
+bool CPPAFKThreadpool::isBusy(){
+    return CPPAFKThreadpool::getInstance()->_isBusy();
+}
+CPPAFKQSize_t CPPAFKThreadpool::runningSessionsCount(){
+    return CPPAFKThreadpool::getInstance()->_runningSessionsCount();
+}
+CPPAFKQSize_t CPPAFKThreadpool::pausedSessionsCount(){
+    return CPPAFKThreadpool::getInstance()->_pausedSessionsCount();
+}
+void CPPAFKThreadpool::_shutdown(){
+    itsState.toShutdown=true;
+    std::unique_lock<std::mutex> lk1(itsState.cvmutexTsh);
+    itsState.cvTsh.wait(lk1,[this]{
+        return itsState.shutdownComplete.load();
+    });
+
+    lk1.unlock();
+
+}
+
+void CPPAFKThreadpool::createThreads(CPPAFKThreadpoolSize_t numProcs)
 {
-    if(numProcs == (std::uint32_t)(-1) || numProcs == 0)
+    if(numProcs == (CPPAFKThreadpoolSize_t)(-1) || numProcs == 0)
     {
         numProcs = std::thread::hardware_concurrency();
     }
-    
+    COMASFKLog_2("Cores found:",numProcs);
     itsState.numCPUs=numProcs;
+    itsState.tpcfg.actualThreadsCount=itsState.numCPUs;
+    itsState.tpcfg.requiredThreadsCount=itsState.numCPUs;
+    itsState.tpcfg.residue=itsState.tpcfg.requiredThreadsCount%itsState.tpcfg.actualThreadsCount;
+    itsState.tpcfg.share=itsState.tpcfg.requiredThreadsCount/itsState.tpcfg.actualThreadsCount;
     
     threads.clear();
     
@@ -157,229 +405,260 @@ void CPPAFKThreadpool::createThreads(std::uint32_t numProcs)
         CPU_SET(i, &cpuset);
         int retcode = pthread_setaffinity_np(threads[i].native_handle(),
                                         sizeof(cpuset), &cpuset);
+        itsState.shutdownCont.fetch_add(1);
         if (retcode != 0) {
-            std::cerr << "Erroroneous call pthread_setaffinity_np() : " << retcode << "\n";
+            std::cerr << "Error while calling pthread_setaffinity_np() : " << retcode << "\n";
         }
-    }
-    for (std::thread& t : threads) {
-        t.join();
     }
     
 }
-CPPAFKQSize_t CPPAFKThreadpool::runningSessionsCount(){
-    itsState.lkMutex1.lock();
+CPPAFKQSize_t CPPAFKThreadpool::_runningSessionsCount(){
+    itsState.sharedPrimitives.lkMutex1.lock();
     CPPAFKQSize_t cc=itsState.onlineSessions.size();
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return (cc);
 }
-std::uint64_t CPPAFKThreadpool::pausedSessionsCount(){
-    itsState.lkMutex1.lock();
-    std::uint64_t cc=itsState.allSessions.size()-itsState.onlineSessions.size();
-    itsState.lkMutex1.unlock();
+CPPAFKQSize_t CPPAFKThreadpool::_pausedSessionsCount(){
+    itsState.sharedPrimitives.lkMutex1.lock();
+    CPPAFKThreadpoolSize_t cc=countPaused;
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return (cc);
 }
 bool CPPAFKThreadpool::isPausedSession(CPPAFKNumId sessionId){
     bool result=false;
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    //iter=itsState.allSessions.find(sessionId);
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
     
     if(iter != itsState.allSessions.end()){
-        //CPPAFKThreadpoolSession* ss=iter->second;
+
         result = iter->second->isPaused();
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     
+    return result;
+}
+bool CPPAFKThreadpool::_isBusy(){
+    bool result=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    for (iter=itsState.allSessions.begin(); iter!= itsState.allSessions.end(); ++iter) {
+        result |=iter->second->isBusy();
+        if(result==true){
+            break;
+        }
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return result;
 }
 bool CPPAFKThreadpool::isBusySession(CPPAFKNumId sessionId){
     bool result=false;
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter=itsState.allSessions.find(sessionId);
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
     
     if(iter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=iter->second;
         result = ss->isBusy();;
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return result;
 }
 void CPPAFKThreadpool::getThreadpoolSessionsList(std::vector<CPPAFKNumId>& out){
 
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
     for (iter=itsState.allSessions.begin(); iter != itsState.allSessions.end(); ++iter) {
-        out.push_back(iter->first);
+        CPPAFKNumId n;
+        n.num64=iter->first;
+        out.push_back(n);
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
 }
 CPPAFKQSize_t CPPAFKThreadpool::totalSessionsCount(){
-    itsState.lkMutex1.lock();
-    std::uint64_t c=itsState.allSessions.size();
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.lock();
+    CPPAFKThreadpoolSize_t c=itsState.allSessions.size();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return c;
 }
+
 CPPAFKQSize_t CPPAFKThreadpool::itemsCountForSession(CPPAFKNumId sessionId){
-    std::uint64_t result=0;
+    CPPAFKThreadpoolSize_t result=0;
     
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter=itsState.allSessions.find(sessionId);
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
     
     if(iter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=iter->second;
         result = ss->getDataItemsCount();;
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     
     return result;
 }
-void CPPAFKThreadpool::flushSession(CPPAFKNumId sessionId){
-    COMASFKLog_2("Flushing session ",sessionId);
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter=itsState.allSessions.find(sessionId);
+bool CPPAFKThreadpool::flushSession(CPPAFKNumId sessionId){
+    bool res=false;
+    //COMASFKLog_2("Flushing session ",sessionId.num64);
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
     
     if(iter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=iter->second;
-        ss->flush();;
+        ss->flush(itsState.gc);;
+        res=true;
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
 
-    COMASFKLog_2("flushed session ",sessionId);
+    return res;
 }
-void CPPAFKThreadpool::flushAll(){
+
+void CPPAFKThreadpool::_flushAll(){
     COMASFKLog("ASFKGlobalThreadpool: Flushing all sessions");
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
     for (iter=itsState.allSessions.begin(); iter != itsState.allSessions.end(); ++iter) {
         CPPAFKThreadpoolSession* ss=iter->second;
-        ss->flush();;
+        ss->flush(itsState.gc);;
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
 }
-
  
-void CPPAFKThreadpool::cancelSession(CPPAFKNumId sessionId){
+bool CPPAFKThreadpool::cancelSession(CPPAFKNumId sessionId){
     DASFKLog_2("Cancelling session with ID %@",sessionId);
-
-    std::map<CPPAFKNumId,CPPAFKThreadpoolSession*>::iterator allsiter;
+    bool res=false;
+    std::unordered_map<std::uint64_t,CPPAFKThreadpoolSession*>::iterator allsiter;
     
-    itsState.lkMutex1.lock();
-    allsiter=itsState.allSessions.find(sessionId);
+    itsState.sharedPrimitives.lkMutex1.lock();
+    allsiter=itsState.allSessions.find(sessionId.num64);
     
     if(allsiter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=allsiter->second;
-        ss->cancel();
-//        result = true;
-        itsState.killedSessions.push_back(ss);
-        itsState.allSessions.erase(allsiter);// removeObjectForKey:sessionId];
-
-    }
-
-    itsState.lkMutex1.unlock();
-    DASFKLog_2("Session to be cancelled: ",sessionId);
-}
-void CPPAFKThreadpool::cancelAll(){
-    DASFKLog(@"Cancelling all sessions");
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    for (iter=itsState.allSessions.begin(); iter!=itsState.allSessions.end(); ++iter) {
-        iter->second->cancel();
-        itsState.killedSessions.push_back(iter->second);
-    }
-
-    itsState.tpcfg.actualThreadsCount=0;
-    CPPAFKThreadpoolConfig tpc=itsState.tpcfg;
-    _reassignProcs(tpc);
-    itsState.vectProc2Bounds.clear();
-    itsState.vectProc2Bounds.resize(itsState.tpcfg.actualThreadsCount);
-    itsState.onlineSessions.clear();
-    
-
-    itsState.allSessions.clear();// = [NSMutableDictionary new];
-    itsState.lkMutex1.unlock();
-    DASFKLog("ASFKGlobalThreadpool: All sessions should be cancelled");
-}
-void CPPAFKThreadpool::pauseSession(CPPAFKNumId sessionId){
-    DASFKLog_2("Pausing session ",sessionId);
-    itsState.lkMutex1.lock();
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter=itsState.allSessions.find(sessionId);
-    // objectForKey:sessionId];
-        if(iter != itsState.allSessions.end()){
-            CPPAFKThreadpoolSession* ss=iter->second;
-            ss->pause();
-            itsState.cloneSessionsMap2Vector();
-
+        if(ss->isPaused()){
+            countPaused.fetch_sub(1);
         }
-        itsState.lkMutex1.unlock();
-    DASFKLog_2("Paused session ",sessionId);
-}
-void CPPAFKThreadpool::pauseAll(){
-    DASFKLog("Pausing all sessions");
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    for (iter=itsState.allSessions.begin(); iter!=itsState.allSessions.end(); ++iter) {
-        iter->second->pause();
+        ss->cancel();
+        itsState.allSessions.erase(allsiter);
+        itsState.gc.killedSessions.castObject(ss,std::nullptr_t());
+        
+        res=true;
     }
-    itsState.cloneSessionsMap2Vector();
 
-    itsState.lkMutex1.unlock();
-    DASFKLog("All sessions paused");
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    return res;
 }
-void CPPAFKThreadpool::resumeSession(CPPAFKNumId sessionId) {
+bool CPPAFKThreadpool::_cancelAll(){
+    WASFKLog(CPPAFK_STR_UNAVAIL_VER_OP);
+    return false;
+}
+bool CPPAFKThreadpool::pauseSession(CPPAFKNumId sessionId){
+    bool res=false;
+    DASFKLog_2("Pausing session ",sessionId);
+    itsState.sharedPrimitives.lkMutex1.lock();
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter=itsState.allSessions.find(sessionId.num64);
+    if(iter != itsState.allSessions.end()){
+        CPPAFKThreadpoolSession* ss=iter->second;
+        ss->pause();
+        countPaused.fetch_add(1);
+        res=true;
+    }
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    return res;
+}
+bool CPPAFKThreadpool::_pauseAll(){
+    bool res=false;
+    DASFKLog("Pausing all sessions");
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    if(itsState.allSessions.size()>0){
+        for (iter=itsState.allSessions.begin(); iter!=itsState.allSessions.end(); ++iter) {
+            iter->second->pause();
+            countPaused.fetch_add(1);
+        }
+        res=true;
+    }
+    
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    DASFKLog("All sessions paused");
+    return res;
+}
+bool CPPAFKThreadpool::resumeSession(CPPAFKNumId sessionId) {
     DASFKLog_2("Resuming session ",sessionId);
-    itsState.lkMutex1.lock();
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter=itsState.allSessions.find(sessionId);
+    bool res=false;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter=itsState.allSessions.find(sessionId.num64);
     // objectForKey:sessionId];
     if(iter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=iter->second;
         ss->resume();
-        itsState.cloneSessionsMap2Vector();
+        countPaused.fetch_sub(1);
+        res=true;
 
     }
-    itsState.lkMutex1.unlock();
-    DASFKLog_2("Resumed session ",sessionId);
+    itsState.sharedPrimitives.lkMutex1.unlock();
+    return res;
 }
-void CPPAFKThreadpool::resumeAll(){
+bool CPPAFKThreadpool::_resumeAll(){
+    bool res=false;
     DASFKLog("Resuming all sessions");
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    for (iter=itsState.allSessions.begin(); iter!=itsState.allSessions.end(); ++iter) {
-        iter->second->resume();
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    if(itsState.allSessions.size()>0){
+        for (iter=itsState.allSessions.begin(); iter!=itsState.allSessions.end(); ++iter) {
+            iter->second->resume();
+            countPaused.fetch_sub(1);
+        }
+        res=true;
     }
-    itsState.cloneSessionsMap2Vector();
-    //[lkMutexL2 unlock];
-    itsState.lkMutex1.unlock();
+
+    itsState.sharedPrimitives.lkMutex1.unlock();
     DASFKLog("ASFKGlobalThreadpool: All sessions resumed");
+    return res;
 }
     
-void tworker( std::uint32_t selector, CPPAFKThreadpoolState* state ) {
-    //__block NSMutableArray* blocks=[NSMutableArray array];
-    
+void tworker( CPPAFKThreadpoolSize_t selector, CPPAFKThreadpoolState* state ) {
     CPPAFKQSize_t i=0;
-//    for (i=0; i<tpcfg.actualThreadsCount;++i)
-//    {
+
     std::function<bool(CPPAFKNumId)> clbMain=[state](CPPAFKNumId sessionId){
         DASFKLog_2("Stopping session ",sessionId);
 
-        //[self _cancelSessionInternally:identity];
+        state->sharedPrimitives.lkMutex1.lock();
         CPPAFKThreadpoolConfig tpc1=state->tpcfg;
-        state->lkMutex1.lock();
-        state->reassignProcs(tpc1,state->onlineSessions.size());
-        state->lkMutex1.unlock();
-        //[lkMutexL1 unlock];
+        state->reassignProcs(tpc1,state->tpcfg.actualThreadsCount);
+        state->sharedPrimitives.lkMutex1.unlock();
+
         return true;
     };
 
-        std::uint32_t ii=i;
-        std::uint32_t selectedSlot=0;
+        CPPAFKQSize_t ii=i;
+        CPPAFKThreadpoolSize_t selectedSlot=0;
         while(1)
         {
+            if(state->toShutdown.load()==true){
+                state->shutdownCont.fetch_sub(1);
+                if(state->shutdownCont.load()==0){
+                    std::unique_lock<std::mutex> lk1(state->cvmutexTsh);
+                    state->shutdownComplete=true;
+
+                    state->gc.disposeAll();
+
+                    lk1.unlock();
+                    
+                }
+                state->cvTsh.notify_one();
+                return;
+            }
+            
+            bool tval=false;
+            if(state->gc.active.compare_exchange_strong(tval,true)){
+                state->gc.dispose();
+                state->gc.active=false;
+            }
+            
+            state->sharedPrimitives.lkMutex1.lock();
             CPPAFKThreadpoolConfig tpc=state->tpcfg;
             CPPAFKThreadpoolConfigRange tcr;
-            state->lkMutex1.lock();
 
             if(state->vectProc2Bounds.size() != state->tpcfg.actualThreadsCount){
                 state->vectProc2Bounds.clear();
@@ -389,8 +668,8 @@ void tworker( std::uint32_t selector, CPPAFKThreadpoolState* state ) {
             state->reassignProcs(tpc,state->onlineSessions.size());
             tcr=state->vectProc2Bounds[ii];
             if(tcr.length==0 ||
-               state->onlineSessions.size()==0){
-                state->lkMutex1.unlock();
+                state->onlineSessions.size()==0){
+                state->sharedPrimitives.lkMutex1.unlock();
                 continue;
             }
             selectedSlot=(selectedSlot+1);
@@ -401,56 +680,54 @@ void tworker( std::uint32_t selector, CPPAFKThreadpoolState* state ) {
                 selectedSlot=tcr.lowBound;
             }
             if(selector >= state->onlineSessions.size()){
-                state->lkMutex1.unlock();
+                state->sharedPrimitives.lkMutex1.unlock();
                 continue;
             }
             
             CPPAFKThreadpoolSession* ss=state->onlineSessions[selector];//objectAtIndex:selectedSlot];
             if(ss->cancellationRequested()){
                 CPPAFKThreadpoolConfig tpc1=state->tpcfg;
-                
                 state->cloneSessionsMap2Vector();
                 state->reassignProcs(tpc1,state->onlineSessions.size());
-                state->lkMutex1.unlock();
-                //[lkMutexL1 unlock];
+                state->sharedPrimitives.lkMutex1.unlock();
+
                 continue;
             }
             
-            state->lkMutex1.unlock();
-            if(ss != std::nullptr_t())
+            state->sharedPrimitives.lkMutex1.unlock();
+            if(ss != std::nullptr_t() && ss->isPaused()==false)
             {
-                ss->select(ii, clbMain);
-
+                ss->select(ii, clbMain,state->gc);
             }
         }
 }
 bool CPPAFKThreadpool::addSession(CPPAFKThreadpoolSession* aseq, CPPAFKNumId identity){
     bool res=false;
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter = itsState.allSessions.find(identity);
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter = itsState.allSessions.find(identity.num64);
     if(aseq != std::nullptr_t() && iter==itsState.allSessions.end()){
-        itsState.allSessions[identity]=aseq;
-
+        itsState.allSessions[identity.num64]=aseq;
         itsState.onlineSessions.push_back(aseq);
+        aseq->deploy();
         res=true;
     }
     
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return res;
 }
 CPPAFKThreadpoolSession* CPPAFKThreadpool::getThreadpoolSessionWithId(CPPAFKNumId identity){
     CPPAFKThreadpoolSession* ss=std::nullptr_t();
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter=itsState.allSessions.find(identity);
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(identity.num64);
     if(iter != itsState.allSessions.end()){
         ss=iter->second;
     }
-    itsState.lkMutex1.unlock();
+    itsState.sharedPrimitives.lkMutex1.unlock();
     return ss;
 }
-bool CPPAFKThreadpool::postDataAsVector(std::vector<CPPAFKBasicDataObjectWrap>& data, CPPAFKNumId sessionId, bool blk){
+bool CPPAFKThreadpool::postDataAsVector(std::vector<CPPAFKBasicDataObjectWrap*>& data, CPPAFKNumId sessionId, bool blk){
 #ifdef CPPAFK_MSG_DEBUG_ENABLED
     if(blk){
         DASFKLog("Performing blocking call");
@@ -460,23 +737,58 @@ bool CPPAFKThreadpool::postDataAsVector(std::vector<CPPAFKBasicDataObjectWrap>& 
     }
 #endif
     bool res=false;
-    std::map<CPPAFKNumId, CPPAFKThreadpoolSession*>::iterator iter;
-    itsState.lkMutex1.lock();
-    iter=itsState.allSessions.find(sessionId);
+    std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+    itsState.sharedPrimitives.lkMutex1.lock();
+    iter=itsState.allSessions.find(sessionId.num64);
     if(iter != itsState.allSessions.end()){
         CPPAFKThreadpoolSession* ss=iter->second;
-        if(ss->callMode == eCPPAFKBlockingCallMode::AFK_BC_NO_BLOCK && blk){
-            COMASFKLog(CPPAFK_STR_MISCONFIG_OP);
+        if(blk)
+        {
+            //Unavailable in this version
         }
-        else{
-            res=ss->postDataAsVector(data,blk);
+        {
+            res=ss->postDataAsVector(itsState.sharedPrimitives, data,false);
+            itsState.sharedPrimitives.lkMutex1.unlock();
         }
     }
-    
-    itsState.lkMutex1.unlock();
-
+    else{
+            itsState.sharedPrimitives.lkMutex1.unlock();
+            EASFKLog_2("session not found: ",sessionId);
+        }
     return res;
 }
+bool CPPAFKThreadpool::postData(CPPAFKBasicDataObjectWrap* data, CPPAFKNumId sessionId, bool blk){
+#ifdef CPPAFK_MSG_DEBUG_ENABLED
+        if(blk){
+            DASFKLog("Performing blocking call");
+        }
+        else{
+            DASFKLog("Performing non-blocking call");
+        }
+#endif
+        bool res=false;
+        std::unordered_map<std::uint64_t, CPPAFKThreadpoolSession*>::iterator iter;
+        itsState.sharedPrimitives.lkMutex1.lock();
+        iter=itsState.allSessions.find(sessionId.num64);
+        if(iter != itsState.allSessions.end()){
+            CPPAFKThreadpoolSession* ss=iter->second;
+            if(blk)
+            {
+                //Unavailable in this version
+            }
+            {
+                res=ss->postData(itsState.sharedPrimitives, data,false);
+                itsState.sharedPrimitives.lkMutex1.unlock();
+            }
+        }
+        else{
+            itsState.sharedPrimitives.lkMutex1.unlock();
+            EASFKLog_2("session not found: ",sessionId);
+        }
+        return res;
+    }
+
 };
+
 
 

@@ -13,7 +13,7 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//  Copyright © 2019-2023 Boris Vigman. All rights reserved.
+//  Copyright © 2019-2024 Boris Vigman. All rights reserved.
 //
 //
 
@@ -43,27 +43,27 @@ void CPPAFKControlBlock::setPaused(bool yesno){
 bool CPPAFKControlBlock::isPaused(){
     return paused;
 }
-void CPPAFKControlBlock::setProgressRoutine(CPPAFKProgressRoutine_t progress){
+bool CPPAFKControlBlock::setProgressRoutine(CPPAFKProgressRoutine_t progress){
     if(progress){
         itsLock.lock();
         itsProgressProc=progress;
         itsLock.unlock();
+        return true;
     }
+    return false;
 }
 void CPPAFKControlBlock::reset(){
-    //itsLock.lock();
+
     abortByCallback=false;
     abortByCaller=false;
-    //itsLock.unlock();
+
 }
 
 bool CPPAFKControlBlock::cancellationRequested(){
     bool b=abortByCallback|abortByCaller;
     return b;
 }
-CPPAFKNumId CPPAFKControlBlock::getCurrentSessionId(){
-    return sessionPrimId;
-}
+
 CPPAFKNumId CPPAFKControlBlock::getParentObjectId(){
     return parentId;
 }
@@ -76,7 +76,5 @@ CPPAFKProgressRoutine_t CPPAFKControlBlock::getProgressRoutine(){
 void CPPAFKControlBlock::stop(){
     abortByCallback=true;
 }
-
-
     
 }
