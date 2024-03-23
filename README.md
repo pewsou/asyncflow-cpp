@@ -7,7 +7,7 @@ Currently available facilities:
 
 *Threadpool*: 
 
-can create and run in parallel indefinite number of isolated sessions. Each session stores set of functions.
+can create and run in parallel virtually unlimited number of isolated sessions. Each session stores set of functions.
 
 Session types available:
 
