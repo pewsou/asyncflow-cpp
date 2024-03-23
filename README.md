@@ -1,5 +1,7 @@
 # asyncflow-cpp
 Cpp version of Asynchronous Flow Kit (https://github.com/pewsou/asyncflow-objc)
+C++ 2011 compatible.
+Tested with OS X 10.12.
 
 Currently available facilities:
 
@@ -25,8 +27,6 @@ FIFO-style queues that may aggregate inserted data in batches.
 # How it works?
 Short manual for Threadpool
 
-    AsyncFlowKit::CPPAFKThreadpool* executor=AsyncFlowKit::CPPAFKThreadpool::getInstance();
-
 create session configuration
 
     AsyncFlowKit::CPPAFKSessionConfigParams scparams;
@@ -47,6 +47,7 @@ add function to configuration
 
 create session with this configuration.
 
+    AsyncFlowKit::CPPAFKThreadpool* executor=AsyncFlowKit::CPPAFKThreadpool::getInstance();
     AsyncFlowKit::CPPAFKNumId session_id = executor->createComposingSession(&scparams);
 
 Once session created, we may feed data into it; in this case - asynchronously:
@@ -133,5 +134,7 @@ Filtering queue: FIFO-style queue, that allows to silently discard items by diff
 Mailbox - embedded facility for asynchronous message exchange.
 
 Contact:
+
+Bugreport: https://chat.whatsapp.com/B6rj5jGLcV1J1noUtla4vd
 
 [![Twitter URL](https://img.shields.io/twitter/url/https/twitter.com/bvprojs.svg?style=social&label=Follow%20%40bvprojs)](https://twitter.com/bvprojs)
