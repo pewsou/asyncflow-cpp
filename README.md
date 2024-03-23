@@ -117,6 +117,7 @@ first batch contains 1 item
 second batch contains 2 items.
 
 Now we will extract item from first batch
+
     bool opsucc;
     double x=abq->pull(opsucc);
 
