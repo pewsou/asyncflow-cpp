@@ -1,7 +1,7 @@
 # asyncflow-cpp
-Cpp version of Asynchronous Flow Kit (https://github.com/pewsou/asyncflow-objc)
-C++ 2011 compatible.
-Tested with OS X 10.12.
+Cpp version of Asynchronous Flow Kit (https://github.com/pewsou/asyncflow-objc).
+
+C++ 2011 compatible. Tested with OS X 10.12.
 
 Currently available facilities:
 
