@@ -28,7 +28,7 @@ FIFO-style queues that may aggregate inserted data in batches.
 Short manual for Threadpool
 
 create session configuration
-
+    #import "CPPAFKBase.hpp"
     AsyncFlowKit::CPPAFKSessionConfigParams scparams;
     std::string name="123";
     scparams.sessionName=name;
